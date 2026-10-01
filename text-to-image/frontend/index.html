@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script>
+    (function() {
+      // Suppress Vite HMR WebSocket connection notices in sandboxed iframe preview
+      var origError = console.error;
+      console.error = function() {
+        var args = Array.prototype.slice.call(arguments);
+        var msg = args.map(function(a) {
+          return typeof a === 'object' && a !== null ? (a.message || a.stack || JSON.stringify(a)) : String(a);
+        }).join(' ');
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('[vite]') !== -1 || msg.indexOf('vite-hmr') !== -1) {
+          return;
+        }
+        origError.apply(console, args);
+      };
+      window.addEventListener('unhandledrejection', function(event) {
+        var msg = String(event.reason && (event.reason.message || event.reason) || '');
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('[vite]') !== -1) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+      window.addEventListener('error', function(event) {
+        var msg = String(event.message || '');
+        if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('[vite]') !== -1) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Text-to-Image by MMM </title>
+  <link rel="icon" type="image/png" href="./favicon.png">
+  <meta name="description" content="Describe a picture in words and get an image back.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Text-to-Image home">
+      <img src="./assets/images/mmm-logo.png" alt="MMM Logo" width="50" height="50">
+      <span class="brand-text">
+        <span class="brand-name">Text-to-Image</span>
+        <span class="brand-by">by MMM</span>
+      </span>
+    </a>
+    <nav aria-label="Main">
+      <a href="#create">Create</a>
+      <a href="#tips">Tips</a>
+      <a href="#about">About</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1>Turn your words into images</h1>
+      <p>Write what you see in your head. A few seconds later, it&rsquo;s a picture you can save.</p>
+    </section>
+
+    <section class="workspace" id="create">
+      <!-- Left: prompt -->
+      <form class="panel prompt-panel" id="prompt-form" novalidate>
+        <div class="prompt-header-row">
+          <label for="prompt">Your description</label>
+          <button type="button" class="btn-enhance-toggle active" id="enhance-toggle" aria-pressed="true" title="Toggle AI Prompt Enhancement">
+            <span class="enhance-dot" aria-hidden="true"></span>
+            <span class="enhance-label">Enhance Prompt: <strong id="enhance-state">ON</strong></span>
+          </button>
+        </div>
+        <textarea id="prompt" maxlength="500" rows="6" placeholder="Describe the image you want to create (e.g. Karbala, Paris, cute cat)..."></textarea>
+        <div class="prompt-meta">
+          <p class="error" id="error" role="alert" hidden></p>
+          <span class="counter" id="counter" aria-live="polite">0 / 500</span>
+        </div>
+
+        <!-- Suggestion control row when Enhance is ON -->
+        <div class="suggestion-control-row" id="suggestion-control-row">
+          <button type="button" class="btn-suggest-prompt" id="btn-suggest-prompt">
+            <svg class="sparkle-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+              <path d="M12 0l2.5 7.5L22 10l-7.5 2.5L12 20l-2.5-7.5L2 10l7.5-2.5z"/>
+            </svg>
+            <span>Get AI Enhanced Suggestion</span>
+          </button>
+          <span class="suggestion-status-text" id="suggestion-status-text">Click to preview enhanced prompt</span>
+        </div>
+
+        <!-- Suggestion Box: Shown when a suggestion is ready or loading -->
+        <div class="suggestion-box" id="suggestion-box" hidden>
+          <div class="suggestion-box-header">
+            <div class="suggestion-title">
+              <span class="sparkle-badge">✨ AI Suggestion</span>
+              <span class="suggestion-subtitle">Click below to apply</span>
+            </div>
+            <button type="button" class="btn-suggestion-close" id="btn-suggestion-close" aria-label="Close suggestion" title="Dismiss suggestion">✕</button>
+          </div>
+
+          <div class="suggestion-loading" id="suggestion-loading" hidden>
+            <span class="spinner-small" aria-hidden="true"></span>
+            <span>Crafting detailed visual suggestion...</span>
+          </div>
+
+          <div class="suggestion-content" id="suggestion-content">
+            <p class="suggestion-text" id="suggestion-text" role="button" tabindex="0" title="Click to use this enhanced prompt"></p>
+            <div class="suggestion-actions">
+              <button type="button" class="btn-use-generate" id="btn-use-generate" title="Use this prompt and generate image immediately">
+                ⚡ Use &amp; Generate Image
+              </button>
+              <button type="button" class="btn-use-prompt" id="btn-use-prompt" title="Fill prompt into editor to customize">
+                ✓ Use Suggestion
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="chips" aria-label="Example prompts">
+          <button type="button" class="chip">A lighthouse on a cliff in a storm</button>
+          <button type="button" class="chip">Paper boats on a flooded street</button>
+          <button type="button" class="chip">A fox reading in a library</button>
+        </div>
+
+        <!-- Model Selector -->
+        <div class="model-selector-group" id="model-selector-group">
+          <div class="model-selector-header">
+            <label for="model-select" class="model-selector-label">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+              <span>Image Model</span>
+            </label>
+            <span class="model-badge" id="selected-model-badge">Realistic</span>
+          </div>
+          <div class="model-select-wrapper">
+            <select id="model-select" class="model-select" name="model" aria-label="Select AI Generation Model">
+              <option value="fast">Fast &bull; FLUX.2 Klein 4B</option>
+              <option value="realistic" selected>Realistic &bull; GPT Image 2.5</option>
+              <option value="places">Places &amp; Details &bull; Nano Banana 2</option>
+              <option value="creative">Creative &bull; Seedream 5.0 Pro</option>
+              <option value="quality">High Quality &bull; FLUX.2 Pro</option>
+            </select>
+            <span class="model-select-chevron" aria-hidden="true">▼</span>
+          </div>
+          <p class="model-description" id="model-description">Optimized for lifelike photographic detail, lighting, and natural depth.</p>
+        </div>
+
+        <button type="submit" class="btn-generate" id="generate-btn">Generate image</button>
+      </form>
+
+      <!-- Right: preview, styled like a photo print -->
+      <div class="panel preview-panel">
+        <figure class="print" id="print" aria-live="polite">
+          <div class="empty" id="empty">
+            <svg viewBox="0 0 64 64" width="56" height="56" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="8" y="12" width="48" height="40" rx="4"/><circle cx="24" cy="26" r="5"/><path d="M8 44l14-12 12 10 8-6 14 12"/>
+            </svg>
+            <p><strong>Nothing here yet</strong><br>Write a description and press Generate image.</p>
+          </div>
+
+          <div class="loading" id="loading" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <p id="loading-text">Developing your image&hellip;</p>
+          </div>
+
+          <img id="result" alt="" hidden>
+        </figure>
+        <div class="preview-actions">
+          <div class="caption-group">
+            <p class="caption" id="caption"></p>
+            <p class="enhanced-caption" id="enhanced-caption" hidden></p>
+            <span class="model-used-tag" id="model-used-tag" hidden></span>
+          </div>
+          <button type="button" class="btn-download" id="download-btn" hidden>Download PNG</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tips" id="tips">
+      <h2>Getting a better result</h2>
+      <ul>
+        <li>Name the subject first, then the place, then the light.</li>
+        <li>Say the medium you want: watercolor, film photo, pencil sketch.</li>
+        <li>Short and specific beats long and vague.</li>
+      </ul>
+    </section>
+
+    <!-- About Developer Section -->
+    <section class="about-section" id="about">
+      <div class="about-card">
+        <div class="about-badge">About the Developer</div>
+        <h2 class="about-name">Muhammad Muneeb Manzoor</h2>
+        <p class="about-title">Software Engineer &bull; Full Stack, Mobile &amp; Game Developer</p>
+        
+        <div class="about-bio">
+          <p>
+            I am a Software Engineer specializing in end-to-end full-stack development, mobile applications, and interactive game engineering. I build real-world, production-ready software solutions with modern architectures, clean code, and intuitive user experiences.
+          </p>
+          <p>
+            With extensive experience taking projects from concept to deployment, I specialize in responsive web platforms, cross-platform mobile apps, dynamic game engines, scalable REST &amp; cloud backends, and generative AI systems.
+          </p>
+        </div>
+
+        <div class="about-skills">
+          <span class="skill-tag">Full-Stack Web</span>
+          <span class="skill-tag">Mobile App Development</span>
+          <span class="skill-tag">Game Development</span>
+          <span class="skill-tag">Real-World Projects</span>
+          <span class="skill-tag">Generative AI Systems</span>
+          <span class="skill-tag">Cloud &amp; REST APIs</span>
+        </div>
+
+        <div class="about-contact-group">
+          <h3 class="about-contact-heading">Get in touch &amp; Connect</h3>
+          <div class="social-links-grid">
+            <!-- Email (click to view & copy) -->
+            <button type="button" class="social-btn email-btn" id="email-toggle-btn" aria-expanded="false" aria-controls="email-card">
+              <svg class="social-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="4" width="20" height="16" rx="2"/>
+                <path d="M22 6l-10 7L2 6"/>
+              </svg>
+              <span class="social-name">Email</span>
+            </button>
+
+            <!-- LinkedIn -->
+            <a href="https://www.linkedin.com/in/muhammadmuneebmanzoor" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="Visit LinkedIn Profile">
+              <svg class="social-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.46 10.9v8.37H9.2V10.9H6.46M7.83 6.64a1.59 1.59 0 0 0-1.6 1.6 1.6 1.6 0 0 0 1.6 1.6 1.6 1.6 0 0 0 1.6-1.6 1.59 1.59 0 0 0-1.6-1.6z"/>
+              </svg>
+              <span class="social-name">LinkedIn</span>
+            </a>
+
+            <!-- Instagram -->
+            <a href="https://www.instagram.com/muneeb18_?stkn=aWk3NHQxN3drd25k" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="Visit Instagram Profile">
+              <svg class="social-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+                <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+                <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+              </svg>
+              <span class="social-name">Instagram</span>
+            </a>
+
+            <!-- Facebook -->
+            <a href="https://www.facebook.com/share/19V95amf1b/" target="_blank" rel="noopener noreferrer" class="social-btn" aria-label="Visit Facebook Profile">
+              <svg class="social-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.84 3.44 8.87 8 9.8V15H8v-3h2V9.5C10 7.57 11.57 6 13.5 6H16v3h-2c-.55 0-1 .45-1 1v2h3v3h-3v6.95c5.05-.5 9-4.76 9-9.95z"/>
+              </svg>
+              <span class="social-name">Facebook</span>
+            </a>
+          </div>
+
+          <!-- Email card that opens on click with copy button -->
+          <div class="email-card" id="email-card" hidden>
+            <div class="email-card-inner">
+              <div class="email-details">
+                <span class="email-label">Email Address</span>
+                <span class="email-value" id="email-address-text">muhammadmuneebmanzoor5@gmail.com</span>
+              </div>
+              <div class="email-card-actions">
+                <button type="button" class="btn-copy-email" id="btn-copy-email" title="Copy email address to clipboard">
+                  <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span id="copy-btn-text">Copy Email</span>
+                </button>
+                <a href="mailto:muhammadmuneebmanzoor5@gmail.com" class="btn-open-mail" id="btn-open-mail" title="Open in your email app">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                    <polyline points="15 3 21 3 21 9"/>
+                    <line x1="10" y1="14" x2="21" y2="3"/>
+                  </svg>
+                  <span>Open Mail App</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Text-to-Image by Muhammad Muneeb Manzoor. All rights reserved.</p>
+  </footer>
+
+  <script src="./script.js"></script>
+</body>
+</html>

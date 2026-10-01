@@ -1,0 +1,6 @@
+{
+  "name": "Text-to-Image by MMM",
+  "description": "Modern and responsive text-to-image generator web application built with clean HTML5, CSS3, and vanilla JavaScript.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

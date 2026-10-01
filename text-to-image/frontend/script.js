@@ -1,0 +1,552 @@
+// ---------- Grab the elements we need ----------
+const form = document.getElementById("prompt-form");
+const promptInput = document.getElementById("prompt");
+const counter = document.getElementById("counter");
+const errorBox = document.getElementById("error");
+const generateBtn = document.getElementById("generate-btn");
+const emptyState = document.getElementById("empty");
+const loadingState = document.getElementById("loading");
+const loadingText = document.getElementById("loading-text");
+const resultImg = document.getElementById("result");
+const caption = document.getElementById("caption");
+const enhancedCaption = document.getElementById("enhanced-caption");
+const downloadBtn = document.getElementById("download-btn");
+
+// Enhance Toggle & Suggestion Elements
+const enhanceToggle = document.getElementById("enhance-toggle");
+const enhanceState = document.getElementById("enhance-state");
+const suggestionControlRow = document.getElementById("suggestion-control-row");
+const btnSuggestPrompt = document.getElementById("btn-suggest-prompt");
+const suggestionStatusText = document.getElementById("suggestion-status-text");
+const suggestionBox = document.getElementById("suggestion-box");
+const suggestionLoading = document.getElementById("suggestion-loading");
+const suggestionContent = document.getElementById("suggestion-content");
+const suggestionText = document.getElementById("suggestion-text");
+const btnUseGenerate = document.getElementById("btn-use-generate");
+const btnUsePrompt = document.getElementById("btn-use-prompt");
+const btnSuggestionClose = document.getElementById("btn-suggestion-close");
+
+// Model Selector Elements
+const modelSelect = document.getElementById("model-select");
+const selectedModelBadge = document.getElementById("selected-model-badge");
+const modelDescription = document.getElementById("model-description");
+const modelUsedTag = document.getElementById("model-used-tag");
+
+let availableModels = [];
+const DEFAULT_FALLBACK_DESCRIPTIONS = {
+  fast: "Ultra-fast generation speed for rapid concepts and testing.",
+  realistic: "Optimized for lifelike photographic detail, lighting, and natural depth.",
+  places: "Specialized for rich architecture, landmarks, geography, and intricate scenes.",
+  creative: "Specialized for artistic compositions, vibrant concepts, and expressive styles.",
+  quality: "Maximum visual fidelity, sharp focus, and intricate textures."
+};
+
+const MAX_LENGTH = 500;
+let isGenerating = false; // stops duplicate image requests
+let isEnhanceEnabled = true; // Prompt Enhancement defaults to ON
+let currentSuggestedPrompt = "";
+let isFetchingSuggestion = false;
+let suggestionDebounceTimer = null;
+
+// ---------- Model Selector Logic ----------
+function getSelectedModelKey() {
+  return modelSelect ? modelSelect.value : "realistic";
+}
+
+function updateModelUI(modelKey) {
+  if (selectedModelBadge) {
+    const found = availableModels.find((m) => m.key === modelKey);
+    selectedModelBadge.textContent = found ? found.label : (modelKey.charAt(0).toUpperCase() + modelKey.slice(1));
+  }
+  if (modelDescription) {
+    const found = availableModels.find((m) => m.key === modelKey);
+    modelDescription.textContent = found ? found.description : (DEFAULT_FALLBACK_DESCRIPTIONS[modelKey] || "");
+  }
+}
+
+async function loadModelsFromBackend() {
+  try {
+    const res = await fetch("/api/models");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && Array.isArray(data.models) && data.models.length > 0) {
+      availableModels = data.models;
+
+      if (modelSelect) {
+        const currentVal = modelSelect.value || data.default || "realistic";
+        modelSelect.innerHTML = "";
+        data.models.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.key;
+          const isDef = m.key === data.default ? " (Default)" : "";
+          opt.textContent = `${m.label} • ${m.modelId}${isDef}`;
+          if (m.key === currentVal) {
+            opt.selected = true;
+          }
+          modelSelect.appendChild(opt);
+        });
+
+        // Ensure default selected model is set
+        if (!currentVal || !data.models.some((m) => m.key === currentVal)) {
+          modelSelect.value = data.default || "realistic";
+        }
+      }
+      updateModelUI(modelSelect ? modelSelect.value : (data.default || "realistic"));
+    }
+  } catch (err) {
+    console.warn("Could not load dynamic models from backend, using pre-configured UI options:", err);
+  }
+}
+
+if (modelSelect) {
+  modelSelect.addEventListener("change", () => {
+    const key = modelSelect.value;
+    updateModelUI(key);
+
+    // If Enhance Prompt is ON and there is user text, refresh the suggestion for the newly chosen model
+    if (isEnhanceEnabled && promptInput.value.trim().length >= 3) {
+      clearTimeout(suggestionDebounceTimer);
+      suggestionDebounceTimer = setTimeout(() => {
+        fetchSuggestion(false);
+      }, 300);
+    }
+  });
+}
+
+// Load models on boot
+loadModelsFromBackend();
+
+// ---------- Enhance Toggle Handler ----------
+if (enhanceToggle) {
+  enhanceToggle.addEventListener("click", () => {
+    isEnhanceEnabled = !isEnhanceEnabled;
+    enhanceToggle.classList.toggle("active", isEnhanceEnabled);
+    enhanceToggle.setAttribute("aria-pressed", isEnhanceEnabled ? "true" : "false");
+    if (enhanceState) {
+      enhanceState.textContent = isEnhanceEnabled ? "ON" : "OFF";
+    }
+
+    if (suggestionControlRow) {
+      suggestionControlRow.hidden = !isEnhanceEnabled;
+    }
+
+    if (!isEnhanceEnabled && suggestionBox) {
+      suggestionBox.hidden = true;
+    } else if (isEnhanceEnabled && promptInput.value.trim().length >= 2) {
+      fetchSuggestion(false);
+    }
+  });
+}
+
+// ---------- UI Error & Loading Helpers ----------
+function showError(message) {
+  errorBox.textContent = message;
+  errorBox.hidden = false;
+  promptInput.classList.add("invalid");
+}
+
+function clearError() {
+  errorBox.hidden = true;
+  promptInput.classList.remove("invalid");
+}
+
+function setLoading(on) {
+  isGenerating = on;
+  generateBtn.disabled = on;
+  generateBtn.textContent = on ? "Generating..." : "Generate image";
+  loadingState.hidden = !on;
+  if (on) {
+    emptyState.hidden = true;
+    resultImg.hidden = true;
+    downloadBtn.hidden = true;
+    caption.textContent = "";
+    if (enhancedCaption) {
+      enhancedCaption.hidden = true;
+    }
+    if (modelUsedTag) {
+      modelUsedTag.hidden = true;
+    }
+  }
+}
+
+// ---------- AI Prompt Suggestion Fetcher ----------
+async function fetchSuggestion(isExplicitClick = false) {
+  if (isFetchingSuggestion) return;
+  const rawPrompt = promptInput.value.trim();
+
+  if (!rawPrompt) {
+    if (isExplicitClick) {
+      showError("Write an idea or place name first, then get an AI suggestion.");
+      promptInput.focus();
+    }
+    if (suggestionBox) suggestionBox.hidden = true;
+    return;
+  }
+
+  clearError();
+  isFetchingSuggestion = true;
+
+  if (btnSuggestPrompt) {
+    btnSuggestPrompt.disabled = true;
+  }
+  if (suggestionStatusText) {
+    suggestionStatusText.textContent = "AI is thinking...";
+  }
+
+  // Show the suggestion container with loading state
+  if (suggestionBox && suggestionLoading && suggestionContent) {
+    suggestionBox.hidden = false;
+    suggestionLoading.hidden = false;
+    suggestionContent.hidden = true;
+  }
+
+  try {
+    const selectedModel = getSelectedModelKey();
+    const res = await fetch("/enhance-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: rawPrompt,
+        model: selectedModel
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error("Could not enhance prompt at this moment.");
+    }
+
+    const data = await res.json();
+    if (data && data.success && data.enhancedPrompt) {
+      currentSuggestedPrompt = data.enhancedPrompt;
+
+      if (suggestionText) {
+        suggestionText.textContent = data.enhancedPrompt;
+      }
+      if (suggestionLoading && suggestionContent) {
+        suggestionLoading.hidden = true;
+        suggestionContent.hidden = false;
+      }
+      if (suggestionStatusText) {
+        suggestionStatusText.textContent = "Click below to apply & generate!";
+      }
+    } else {
+      throw new Error("Empty suggestion received.");
+    }
+  } catch (err) {
+    console.warn("Suggestion fetch error:", err);
+    if (isExplicitClick) {
+      showError("Could not retrieve AI suggestion right now. You can still generate directly.");
+    }
+    if (suggestionBox) {
+      suggestionBox.hidden = true;
+    }
+    if (suggestionStatusText) {
+      suggestionStatusText.textContent = "Ready to generate";
+    }
+  } finally {
+    isFetchingSuggestion = false;
+    if (btnSuggestPrompt) {
+      btnSuggestPrompt.disabled = false;
+    }
+  }
+}
+
+// ---------- Apply Suggestion Handler ----------
+function applySuggestion(andGenerateImmediately = false) {
+  if (!currentSuggestedPrompt) return;
+
+  // Insert enhanced prompt into textarea
+  promptInput.value = currentSuggestedPrompt;
+  promptInput.dispatchEvent(new Event("input"));
+  clearError();
+
+  if (andGenerateImmediately) {
+    // Hide suggestion box & trigger image generation
+    if (suggestionBox) suggestionBox.hidden = true;
+    handleGenerate(new Event("submit"));
+  } else {
+    // Provide user feedback that it was inserted into the prompt
+    if (btnUsePrompt) {
+      const origText = btnUsePrompt.textContent;
+      btnUsePrompt.textContent = "✓ Applied to Prompt!";
+      btnUsePrompt.style.borderColor = "var(--accent)";
+      setTimeout(() => {
+        btnUsePrompt.textContent = origText;
+        btnUsePrompt.style.borderColor = "";
+      }, 2000);
+    }
+    promptInput.focus();
+  }
+}
+
+// ---------- Main Generation Flow ----------
+async function handleGenerate(event) {
+  if (event && event.preventDefault) event.preventDefault();
+  if (isGenerating) return;
+
+  const currentPrompt = promptInput.value.trim();
+
+  // Validation: prompt cannot be empty
+  if (!currentPrompt) {
+    showError("Write a description first, then press Generate image.");
+    promptInput.focus();
+    return;
+  }
+
+  clearError();
+  setLoading(true);
+
+  let promptToSend = currentPrompt;
+  let originalPromptForCaption = currentPrompt;
+  let enhancedPromptForCaption = null;
+
+  try {
+    const selectedModel = getSelectedModelKey();
+
+    // If Enhance is ON, check if prompt needs enhancement or was already enhanced
+    if (isEnhanceEnabled) {
+      if (loadingText) {
+        loadingText.textContent = "Understanding prompt...";
+      }
+
+      // If user already used a suggestion that matches currentPrompt, keep it
+      if (currentSuggestedPrompt && currentPrompt === currentSuggestedPrompt) {
+        enhancedPromptForCaption = currentSuggestedPrompt;
+      } else {
+        // Fetch enhanced version
+        try {
+          const enhanceResponse = await fetch("/enhance-prompt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: currentPrompt,
+              model: selectedModel
+            })
+          });
+
+          if (enhanceResponse.ok) {
+            const enhanceData = await enhanceResponse.json();
+            if (enhanceData && enhanceData.success && enhanceData.enhancedPrompt) {
+              enhancedPromptForCaption = enhanceData.enhancedPrompt;
+              promptToSend = enhanceData.enhancedPrompt;
+              currentSuggestedPrompt = enhanceData.enhancedPrompt;
+
+              // Also display it in the suggestion box for user reference
+              if (suggestionText) {
+                suggestionText.textContent = enhanceData.enhancedPrompt;
+              }
+              if (suggestionBox && suggestionContent && suggestionLoading) {
+                suggestionLoading.hidden = true;
+                suggestionContent.hidden = false;
+                suggestionBox.hidden = false;
+              }
+            }
+          }
+        } catch (enhanceErr) {
+          console.warn("Fallback to original prompt on generation:", enhanceErr);
+          promptToSend = currentPrompt;
+        }
+      }
+    }
+
+    // Step 2: Request Image Generation from Backend
+    if (loadingText) {
+      loadingText.textContent = "Developing your image…";
+    }
+
+    const response = await fetch("/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: promptToSend,
+        model: selectedModel
+      })
+    });
+
+    if (!response.ok) {
+      let errorMessage = "Something went wrong while generating your image. Please try again.";
+      try {
+        const errorData = await response.json();
+        if (errorData && errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (_) {}
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    if (!data.success || !data.imageUrl) {
+      throw new Error(data.error || "Something went wrong while generating your image. Please try again.");
+    }
+
+    // Display the image
+    resultImg.src = data.imageUrl;
+    resultImg.alt = "Generated image for: " + (enhancedPromptForCaption || originalPromptForCaption);
+    resultImg.hidden = false;
+
+    // Trigger photo print develop animation
+    resultImg.classList.remove("reveal");
+    void resultImg.offsetWidth;
+    resultImg.classList.add("reveal");
+
+    // Display model used tag
+    if (modelUsedTag && data.modelLabel && data.modelId) {
+      modelUsedTag.textContent = `Model: ${data.modelLabel} (${data.modelId})`;
+      modelUsedTag.hidden = false;
+    }
+
+    // Update captions
+    if (enhancedPromptForCaption && enhancedPromptForCaption !== originalPromptForCaption) {
+      caption.textContent = "Original: " + originalPromptForCaption;
+      if (enhancedCaption) {
+        enhancedCaption.textContent = "Enhanced: " + enhancedPromptForCaption;
+        enhancedCaption.hidden = false;
+      }
+    } else {
+      caption.textContent = originalPromptForCaption;
+      if (enhancedCaption) {
+        enhancedCaption.hidden = true;
+      }
+    }
+
+    downloadBtn.hidden = false;
+
+  } catch (err) {
+    console.error("Generate error:", err);
+    emptyState.hidden = false;
+    showError(err.message || "Something went wrong while generating your image. Please try again.");
+  } finally {
+    setLoading(false);
+    if (loadingText) {
+      loadingText.textContent = "Developing your image…";
+    }
+  }
+}
+
+// ---------- Download Image Handler ----------
+function handleDownload() {
+  if (!resultImg.src) return;
+  const link = document.createElement("a");
+  link.href = resultImg.src;
+  link.download = "text-to-image-" + Date.now() + ".png";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// ---------- Event Listeners ----------
+form.addEventListener("submit", handleGenerate);
+downloadBtn.addEventListener("click", handleDownload);
+
+// Suggestion buttons
+if (btnSuggestPrompt) {
+  btnSuggestPrompt.addEventListener("click", () => fetchSuggestion(true));
+}
+if (btnUseGenerate) {
+  btnUseGenerate.addEventListener("click", () => applySuggestion(true));
+}
+if (btnUsePrompt) {
+  btnUsePrompt.addEventListener("click", () => applySuggestion(false));
+}
+if (suggestionText) {
+  suggestionText.addEventListener("click", () => applySuggestion(false));
+}
+if (btnSuggestionClose) {
+  btnSuggestionClose.addEventListener("click", () => {
+    if (suggestionBox) suggestionBox.hidden = true;
+  });
+}
+
+// Real-time character counter & intelligent suggestion debouncer
+promptInput.addEventListener("input", () => {
+  const len = promptInput.value.length;
+  counter.textContent = len + " / " + MAX_LENGTH;
+  if (promptInput.value.trim()) clearError();
+
+  // If Enhance Prompt is ON and user types an idea, automatically suggest after a short pause
+  if (isEnhanceEnabled) {
+    clearTimeout(suggestionDebounceTimer);
+    const val = promptInput.value.trim();
+    if (val.length >= 3 && val.length <= 40) {
+      suggestionDebounceTimer = setTimeout(() => {
+        fetchSuggestion(false);
+      }, 700);
+    }
+  }
+});
+
+// Example prompt chip buttons
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    promptInput.value = chip.textContent;
+    promptInput.dispatchEvent(new Event("input"));
+    promptInput.focus();
+
+    if (isEnhanceEnabled) {
+      clearTimeout(suggestionDebounceTimer);
+      suggestionDebounceTimer = setTimeout(() => {
+        fetchSuggestion(false);
+      }, 200);
+    }
+  });
+});
+
+// ---------- Email Section & Copy Handler ----------
+const emailToggleBtn = document.getElementById("email-toggle-btn");
+const emailCard = document.getElementById("email-card");
+const btnCopyEmail = document.getElementById("btn-copy-email");
+const copyBtnText = document.getElementById("copy-btn-text");
+const emailAddressText = document.getElementById("email-address-text");
+
+if (emailToggleBtn && emailCard) {
+  emailToggleBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const willOpen = emailCard.hidden;
+    emailCard.hidden = !willOpen;
+    emailToggleBtn.classList.toggle("active", willOpen);
+    emailToggleBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    if (willOpen) {
+      emailCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
+}
+
+if (btnCopyEmail) {
+  btnCopyEmail.addEventListener("click", async () => {
+    const emailToCopy = emailAddressText ? emailAddressText.textContent.trim() : "muhammadmuneebmanzoor5@gmail.com";
+    let copied = false;
+
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(emailToCopy);
+        copied = true;
+      } catch (_) {}
+    }
+
+    if (!copied) {
+      const tempInput = document.createElement("textarea");
+      tempInput.value = emailToCopy;
+      tempInput.style.position = "fixed";
+      tempInput.style.left = "-9999px";
+      document.body.appendChild(tempInput);
+      tempInput.focus();
+      tempInput.select();
+      try {
+        copied = document.execCommand("copy");
+      } catch (_) {}
+      document.body.removeChild(tempInput);
+    }
+
+    if (copyBtnText) {
+      const originalText = copyBtnText.textContent;
+      btnCopyEmail.classList.add("copied");
+      copyBtnText.textContent = "✓ Copied!";
+      setTimeout(() => {
+        btnCopyEmail.classList.remove("copied");
+        copyBtnText.textContent = originalText;
+      }, 2500);
+    }
+  });
+}
